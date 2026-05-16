@@ -1,0 +1,17 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "bench-large",
+  "transcript_path": "/tmp/cclse-bench-large.jsonl",
+  "cwd": "/tmp",
+  "model": { "id": "claude-opus-4-7", "display_name": "Opus 4.7" },
+  "workspace": { "current_dir": "/tmp", "project_dir": "/tmp", "added_dirs": [] },
+  "version": "2.2.18",
+  "output_style": { "name": "default" },
+  "cost": {
+    "total_cost_usd": 2.34,
+    "total_duration_ms": 3600000,
+    "total_api_duration_ms": 480000,
+    "total_lines_added": 1850,
+    "total_lines_removed": 612
+  }
+}

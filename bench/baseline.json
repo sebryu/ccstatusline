@@ -1,0 +1,45 @@
+{
+  "args": {
+    "runs": 15,
+    "bin": "dist/ccstatusline.js",
+    "jsonOut": "bench/baseline.json"
+  },
+  "rows": [
+    {
+      "bin": "current",
+      "payload": "minimal.json",
+      "stats": {
+        "n": 15,
+        "min": 187.059583,
+        "p50": 201.263791,
+        "p95": 232.04375,
+        "max": 261.98125,
+        "mean": 208.15062226666663
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "default.json",
+      "stats": {
+        "n": 15,
+        "min": 188.675042,
+        "p50": 193.198667,
+        "p95": 201.95975,
+        "max": 204.024,
+        "mean": 194.79678353333335
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "large-transcript.json",
+      "stats": {
+        "n": 15,
+        "min": 199.053667,
+        "p50": 204.62,
+        "p95": 211.031291,
+        "max": 213.262833,
+        "mean": 205.1191388
+      }
+    }
+  ]
+}

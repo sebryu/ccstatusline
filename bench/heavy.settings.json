@@ -1,0 +1,108 @@
+{
+  "version": 3,
+  "lines": [
+    [
+      {
+        "id": "1",
+        "type": "model"
+      },
+      {
+        "id": "2",
+        "type": "separator"
+      },
+      {
+        "id": "3",
+        "type": "context-length"
+      },
+      {
+        "id": "4",
+        "type": "separator"
+      },
+      {
+        "id": "5",
+        "type": "tokens-input"
+      },
+      {
+        "id": "6",
+        "type": "separator"
+      },
+      {
+        "id": "7",
+        "type": "tokens-output"
+      },
+      {
+        "id": "8",
+        "type": "separator"
+      },
+      {
+        "id": "9",
+        "type": "tokens-cached"
+      },
+      {
+        "id": "10",
+        "type": "separator"
+      },
+      {
+        "id": "11",
+        "type": "tokens-total"
+      }
+    ],
+    [
+      {
+        "id": "20",
+        "type": "session-clock"
+      },
+      {
+        "id": "21",
+        "type": "separator"
+      },
+      {
+        "id": "22",
+        "type": "session-cost"
+      },
+      {
+        "id": "23",
+        "type": "separator"
+      },
+      {
+        "id": "24",
+        "type": "input-speed"
+      },
+      {
+        "id": "25",
+        "type": "separator"
+      },
+      {
+        "id": "26",
+        "type": "output-speed"
+      },
+      {
+        "id": "27",
+        "type": "separator"
+      },
+      {
+        "id": "28",
+        "type": "total-speed"
+      }
+    ]
+  ],
+  "flexMode": "full-minus-40",
+  "compactThreshold": 60,
+  "colorLevel": 0,
+  "inheritSeparatorColors": false,
+  "globalBold": false,
+  "minimalistMode": false,
+  "powerline": {
+    "enabled": false,
+    "separators": [
+      ""
+    ],
+    "separatorInvertBackground": [
+      false
+    ],
+    "startCaps": [],
+    "endCaps": [],
+    "autoAlign": false,
+    "continueThemeAcrossLines": false
+  }
+}

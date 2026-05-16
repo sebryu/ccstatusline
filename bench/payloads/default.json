@@ -1,0 +1,35 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "bench-default",
+  "transcript_path": "/tmp/cclse-bench-small.jsonl",
+  "cwd": "/tmp",
+  "model": { "id": "claude-opus-4-7", "display_name": "Opus 4.7" },
+  "workspace": {
+    "current_dir": "/tmp",
+    "project_dir": "/tmp",
+    "added_dirs": []
+  },
+  "version": "2.2.18",
+  "output_style": { "name": "default" },
+  "cost": {
+    "total_cost_usd": 0.05,
+    "total_duration_ms": 90000,
+    "total_api_duration_ms": 12000,
+    "total_lines_added": 234,
+    "total_lines_removed": 41
+  },
+  "context_window": {
+    "total_input_tokens": 80000,
+    "total_output_tokens": 18000,
+    "context_window_size": 200000,
+    "current_usage": {
+      "input_tokens": 6000,
+      "output_tokens": 900,
+      "cache_creation_input_tokens": 4000,
+      "cache_read_input_tokens": 70000
+    },
+    "used_percentage": 40,
+    "remaining_percentage": 60
+  },
+  "exceeds_200k_tokens": false
+}

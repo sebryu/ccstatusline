@@ -1,0 +1,45 @@
+{
+  "args": {
+    "runs": 20,
+    "bin": "dist/ccstatusline.js",
+    "jsonOut": "bench/wave1-split.json"
+  },
+  "rows": [
+    {
+      "bin": "current",
+      "payload": "minimal.json",
+      "stats": {
+        "n": 20,
+        "min": 177.856625,
+        "p50": 195.961584,
+        "p95": 205.675833,
+        "max": 206.7475,
+        "mean": 193.76331875
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "default.json",
+      "stats": {
+        "n": 20,
+        "min": 178.345416,
+        "p50": 182.303125,
+        "p95": 188.928375,
+        "max": 189.208916,
+        "mean": 182.88636655000002
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "large-transcript.json",
+      "stats": {
+        "n": 20,
+        "min": 189.755542,
+        "p50": 194.736625,
+        "p95": 223.825667,
+        "max": 232.63925,
+        "mean": 200.16297505
+      }
+    }
+  ]
+}
