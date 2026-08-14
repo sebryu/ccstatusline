@@ -2,24 +2,30 @@
 
 Private fork of [ccstatusline](https://github.com/sirmalloc/ccstatusline) focused on **cold-start latency**. Every Claude Code status-line refresh re-spawns the binary, so reducing per-invocation wall-clock time directly reduces UI lag.
 
-Branch: `perf/wave-1`, rebased onto upstream `2.2.27` (3 perf commits + this doc).
+Branch: `perf/wave-1`, rebased onto upstream `2.2.27` (3 perf commits + this doc). Commit SHAs are deliberately not cited below — the branch is rebased onto upstream on every update, which rewrites them.
+
+The bundle Claude Code actually runs is built from a separate clone at `~/.local/share/ccstatusline-live`, so development in this tree never disturbs the live status line. Refresh it by running `ccstatusline-update` (`~/.local/bin/ccstatusline-update`): it fast-forwards this repo's `main`, rebases `perf/wave-1` if needed, then resets and rebuilds the live clone. The script deliberately lives outside the clone, since it `git reset --hard`s that directory and bash reads scripts incrementally.
 
 ## Headline numbers
 
-Measured on darwin/arm64 with `node` driving both binaries (same runtime for fork and upstream) — see `bench/RESULTS.md` for the full table and reproduction recipe.
+Re-measured 2026-08-14 against upstream **2.2.27** on darwin/arm64, both bins built from source and driven by the same runtime, with a real 13-widget config. Samples are interleaved round-robin between bins so machine drift hits each equally — measuring bins in consecutive blocks produced p50/mean disagreements of 20 ms+ on this hardware. 30 runs (12 for the 36 MiB case).
 
-| payload | upstream 2.2.18 p50 | fork p50 | Δ |
+Typical session (454 KiB transcript):
+
+| runtime | upstream 2.2.27 p50 | fork p50 | Δ |
 |---|---|---|---|
-| minimal.json | 202.5 ms | 179.5 ms | **−11%** |
-| default.json (default config) | 193.6 ms | 187.5 ms | −3% |
-| large-transcript.json | 200.9 ms | 193.2 ms | −4% |
-| large-transcript.json (heavy config) | 173.5 ms | 156.1 ms | **−10%** |
+| `bun` | 158.3 ms | 143.6 ms | **−9.3%** |
+| `node` | 186.9 ms | 167.0 ms | **−10.6%** |
 
-Entry bundle: **3.15 MiB → 23 KiB** (−99%). Render-path closure is still ~1.86 MiB due to widget→shared-editor→React/Ink coupling — wave 2 target.
+Heavy session (36 MiB transcript, `bun`): 225.6 ms → **197.6 ms** (**−12.4%**).
+
+Entry bundle: **3.22 MiB → 19.8 KiB** (−99%). Render-path closure is still ~2.0 MiB due to widget→shared-editor→React/Ink coupling — wave 2 target.
+
+The runtime matters as much as the fork: on the same fork bundle, `bun` beats `node` by ~14% (167.0 → 143.6 ms), because at this scale most of the wall clock is process startup, not our code. Best combination is `bun` + fork bundle at 143.6 ms vs 186.9 ms for the stock `node` + upstream pairing — **−23%** end to end.
 
 ## What changed
 
-### 1. Lazy-load the TUI (`7132c26`)
+### 1. Lazy-load the TUI
 
 Upstream emits a single 3.15 MiB `dist/ccstatusline.js` that statically imports the entire TUI (React 19 + Ink + ink-gradient + ink-select-input + react-devtools-core + zod) even though piped status-line renders never touch any of it.
 
@@ -28,7 +34,7 @@ Upstream emits a single 3.15 MiB `dist/ccstatusline.js` that statically imports 
 
 Result: dispatcher entry shrinks from 3.15 MiB to 23 KiB. The render path no longer parses the TUI dependency graph at all.
 
-### 2. In-process JSONL read cache (`dee8f1c`)
+### 2. In-process JSONL read cache
 
 The default render path calls `readJsonlLines` up to 3× per invocation (`getTokenMetrics`, `getSessionDuration`, `getSpeedMetricsCollection`), each re-reading and re-splitting the whole transcript.
 
@@ -37,7 +43,7 @@ The default render path calls `readJsonlLines` up to 3× per invocation (`getTok
 
 Small in absolute terms (<2 ms p50 even at a 9 MiB transcript — the dominant cost is `JSON.parse` per line, not read+split), but it compounds with #1 on heavy configs and lays the foundation for a future parsed-entries cache and for the parallel-CC scenario in upstream issue #137.
 
-### 3. Benchmark harness (`24e7113`)
+### 3. Benchmark harness
 
 Reproducible cold-start measurements so future perf changes are evidence-driven, not vibes.
 
