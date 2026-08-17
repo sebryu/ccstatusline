@@ -24,6 +24,13 @@ const sidechain = (type: string, seconds: number): string => JSON.stringify({ ty
 const apiError = (seconds: number): string => JSON.stringify({ type: 'assistant', timestamp: isoAgo(seconds), isApiErrorMessage: true });
 const assistantUsage = (seconds: number, usage: object): string => JSON.stringify({ type: 'assistant', timestamp: isoAgo(seconds), message: { usage } });
 const noCacheUsage = { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
+const tieredWrite = (ttl: '5m' | '1h', tokens = 5000) => ({
+    cache_creation_input_tokens: tokens,
+    cache_creation: {
+        ephemeral_5m_input_tokens: ttl === '5m' ? tokens : 0,
+        ephemeral_1h_input_tokens: ttl === '1h' ? tokens : 0
+    }
+});
 
 describe('CacheTimer widget', () => {
     let tmpDir: string;
@@ -221,17 +228,106 @@ describe('CacheTimer widget', () => {
         expect(widget.render(item({ metadata: { ttlSeconds: 'abc' } }), transcriptContext([assistant(600)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
     });
 
-    it('cycles the TTL between 5m and 1h via the keybind', () => {
+    it('cycles the TTL through auto, 5m and 1h via the keybind', () => {
         const widget = new CacheTimerWidget();
-        const toOneHour = widget.handleEditorAction('toggle-ttl', item());
+        const toFiveMinutes = widget.handleEditorAction('toggle-ttl', item());
+        expect(toFiveMinutes?.metadata?.ttlSeconds).toBe('300');
+        const toOneHour = widget.handleEditorAction('toggle-ttl', toFiveMinutes ?? item());
         expect(toOneHour?.metadata?.ttlSeconds).toBe('3600');
-        const backToDefault = widget.handleEditorAction('toggle-ttl', toOneHour ?? item());
-        expect(backToDefault?.metadata?.ttlSeconds).toBeUndefined();
+        const backToAuto = widget.handleEditorAction('toggle-ttl', toOneHour ?? item());
+        expect(backToAuto?.metadata?.ttlSeconds).toBeUndefined();
     });
 
-    it('annotates the editor with a non-default TTL', () => {
+    it('cycles a malformed TTL back to auto', () => {
+        const widget = new CacheTimerWidget();
+        expect(widget.handleEditorAction('toggle-ttl', item({ metadata: { ttlSeconds: 'abc' } }))?.metadata?.ttlSeconds).toBeUndefined();
+    });
+
+    it('annotates the editor only with an explicitly pinned TTL', () => {
         const widget = new CacheTimerWidget();
         expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: '3600' } })).modifierText).toBe('(ttl 1h)');
+        expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: '300' } })).modifierText).toBe('(ttl 5m)');
         expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: '3600', hideWhenEmpty: 'true' } })).modifierText).toBe('(ttl 1h, hide when empty)');
+        // Auto is the default, whether implicit or written out.
+        expect(widget.getEditorDisplay(item()).modifierText).toBeUndefined();
+        expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: 'auto' } })).modifierText).toBeUndefined();
+    });
+
+    describe('TTL detection', () => {
+        it('detects the 1-hour tier from the transcript instead of assuming 5 minutes', () => {
+            const widget = new CacheTimerWidget();
+            // 600s in, a 5-minute tier would be COLD; the detected 1-hour tier is not.
+            const context = transcriptContext([assistantUsage(600, tieredWrite('1h'))]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('detects the 5-minute tier from the transcript', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistantUsage(600, tieredWrite('5m'))]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('lets an explicit TTL override what the transcript reported', () => {
+            const widget = new CacheTimerWidget();
+            const oneHourTranscript = transcriptContext([assistantUsage(600, tieredWrite('1h'))]);
+            expect(widget.render(item({ metadata: { ttlSeconds: '300' } }), oneHourTranscript, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            const fiveMinuteTranscript = transcriptContext([assistantUsage(600, tieredWrite('5m'))]);
+            expect(widget.render(item({ metadata: { ttlSeconds: '3600' } }), fiveMinuteTranscript, DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('falls back to the 5-minute default when no row records a tier', () => {
+            const widget = new CacheTimerWidget();
+            // A pure cache read carries no per-tier breakdown to detect from.
+            const readOnly = assistantUsage(600, { cache_read_input_tokens: 1234 });
+            expect(widget.render(item(), transcriptContext([readOnly]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            // Neither does an explicit auto with nothing to detect.
+            expect(widget.render(item({ metadata: { ttlSeconds: 'auto' } }), transcriptContext([readOnly]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('reads the tier from an older write when the anchor row was a pure cache read', () => {
+            const widget = new CacheTimerWidget();
+            const context = transcriptContext([
+                assistantUsage(900, tieredWrite('1h')),
+                assistantUsage(600, { cache_read_input_tokens: 1234 })
+            ]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('prefers the newest tier when the session switched tiers', () => {
+            const widget = new CacheTimerWidget();
+            const context = transcriptContext([
+                assistantUsage(900, tieredWrite('1h')),
+                assistantUsage(600, tieredWrite('5m'))
+            ]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('ignores sidechain rows when detecting the tier', () => {
+            const widget = new CacheTimerWidget();
+            const subagentWrite = JSON.stringify({ type: 'assistant', timestamp: isoAgo(5), isSidechain: true, message: { usage: tieredWrite('1h') } });
+            const context = transcriptContext([assistantUsage(600, tieredWrite('5m')), subagentWrite]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('picks the tier holding most of the written tokens when a row writes both', () => {
+            const widget = new CacheTimerWidget();
+            const mostlyOneHour = { cache_creation_input_tokens: 5100, cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 5000 } };
+            expect(widget.render(item(), transcriptContext([assistantUsage(600, mostlyOneHour)]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+            const mostlyFiveMinute = { cache_creation_input_tokens: 5100, cache_creation: { ephemeral_5m_input_tokens: 5000, ephemeral_1h_input_tokens: 100 } };
+            expect(widget.render(item(), transcriptContext([assistantUsage(600, mostlyFiveMinute)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('ignores an all-zero tier breakdown', () => {
+            const widget = new CacheTimerWidget();
+            const zeroed = { cache_read_input_tokens: 1234, cache_creation: { ephemeral_5m_input_tokens: 0, ephemeral_1h_input_tokens: 0 } };
+            expect(widget.render(item(), transcriptContext([assistantUsage(600, zeroed)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('scales the glyph thresholds to the detected tier', () => {
+            const widget = new CacheTimerWidget();
+            // 40 minutes into a detected 1-hour window is past halfway: draining, not fresh.
+            expect(widget.render(item(), transcriptContext([assistantUsage(2400, tieredWrite('1h'))]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟡 \d+:\d{2}$/);
+            // 55 minutes in is inside the last 20%: urgent.
+            expect(widget.render(item(), transcriptContext([assistantUsage(3300, tieredWrite('1h'))]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🔴 \d+:\d{2}$/);
+        });
     });
 });
