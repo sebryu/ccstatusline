@@ -248,10 +248,39 @@ function getExplicitTtlSeconds(item: WidgetItem): number | null {
     return Number.isFinite(parsed) && parsed > SAFETY_MARGIN ? parsed : null;
 }
 
-// An explicit override wins over what the transcript showed, which in turn wins
-// over the 5-minute default the API applies when nothing says otherwise.
+// Claude Code's own truthiness test for these variables: anything else is off.
+const ENV_TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
+
+function isEnvEnabled(value: string | undefined): boolean {
+    return value !== undefined && ENV_TRUTHY_VALUES.includes(value.toLowerCase().trim());
+}
+
+/**
+ * The tier Claude Code was told to request, for sessions whose transcript holds
+ * no cache write to read the real one from. A forced 5m wins outright over an
+ * enabled 1h, matching Claude Code's precedence.
+ *
+ * Only useful when one of these is actually set: left unset, the tier is
+ * decided by a remote allowlist and the account's overage state, neither of
+ * which is visible here. These are undocumented internal variables, so this is
+ * a hint below the transcript, never above it — and if they are ever renamed
+ * the lookup simply stops matching and the default applies.
+ */
+function getEnvTtlSeconds(): number | null {
+    if (isEnvEnabled(process.env.FORCE_PROMPT_CACHING_5M)) {
+        return 300;
+    }
+    if (isEnvEnabled(process.env.ENABLE_PROMPT_CACHING_1H)) {
+        return 3600;
+    }
+    return null;
+}
+
+// An explicit override wins over what the transcript observed, which wins over
+// what the environment requested, which wins over the 5-minute default the API
+// applies when nothing says otherwise.
 function resolveTtlSeconds(item: WidgetItem, detectedTtlSeconds: number | null): number {
-    return getExplicitTtlSeconds(item) ?? detectedTtlSeconds ?? DEFAULT_TTL_SECONDS;
+    return getExplicitTtlSeconds(item) ?? detectedTtlSeconds ?? getEnvTtlSeconds() ?? DEFAULT_TTL_SECONDS;
 }
 
 function cycleTtl(item: WidgetItem): WidgetItem {

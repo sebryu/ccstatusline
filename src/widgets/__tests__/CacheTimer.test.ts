@@ -322,6 +322,60 @@ describe('CacheTimer widget', () => {
             expect(widget.render(item(), transcriptContext([assistantUsage(600, zeroed)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
         });
 
+        describe('environment fallback', () => {
+            const savedEnv = { ...process.env };
+
+            afterEach(() => {
+                delete process.env.ENABLE_PROMPT_CACHING_1H;
+                delete process.env.FORCE_PROMPT_CACHING_5M;
+                Object.assign(process.env, savedEnv);
+            });
+
+            // A pure cache read records no tier, so the environment is the only
+            // remaining hint about what the request asked for.
+            const readOnly = (seconds: number): string => assistantUsage(seconds, { cache_read_input_tokens: 1234 });
+
+            it('uses ENABLE_PROMPT_CACHING_1H when the transcript records no tier', () => {
+                process.env.ENABLE_PROMPT_CACHING_1H = '1';
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item(), transcriptContext([readOnly(600)]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+            });
+
+            it('lets a forced 5-minute tier win over an enabled 1-hour tier', () => {
+                process.env.ENABLE_PROMPT_CACHING_1H = 'true';
+                process.env.FORCE_PROMPT_CACHING_5M = 'true';
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item(), transcriptContext([readOnly(600)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            });
+
+            it('ignores values Claude Code would not treat as enabled', () => {
+                const widget = new CacheTimerWidget();
+                for (const value of ['0', 'false', 'y', 'enabled', '']) {
+                    process.env.ENABLE_PROMPT_CACHING_1H = value;
+                    expect(widget.render(item(), transcriptContext([readOnly(600)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+                }
+                // ...while the accepted spellings all enable it.
+                for (const value of ['1', 'true', 'TRUE', 'yes', 'on', ' on ']) {
+                    process.env.ENABLE_PROMPT_CACHING_1H = value;
+                    expect(widget.render(item(), transcriptContext([readOnly(600)]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+                }
+            });
+
+            it('ranks the observed tier above the requested one', () => {
+                process.env.ENABLE_PROMPT_CACHING_1H = '1';
+                const widget = new CacheTimerWidget();
+                // The environment asked for 1h but the server billed 5m, so the
+                // transcript wins and the countdown is already cold.
+                expect(widget.render(item(), transcriptContext([assistantUsage(600, tieredWrite('5m'))]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            });
+
+            it('still lets an explicit override win over the environment', () => {
+                process.env.ENABLE_PROMPT_CACHING_1H = '1';
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item({ metadata: { ttlSeconds: '300' } }), transcriptContext([readOnly(600)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            });
+        });
+
         it('scales the glyph thresholds to the detected tier', () => {
             const widget = new CacheTimerWidget();
             // 40 minutes into a detected 1-hour window is past halfway: draining, not fresh.
