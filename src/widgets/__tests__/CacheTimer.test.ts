@@ -183,7 +183,7 @@ describe('CacheTimer widget', () => {
     it('exposes a hide-when-empty keybind and toggles the flag', () => {
         const widget = new CacheTimerWidget();
         expect(widget.getCustomKeybinds()).toEqual([
-            { key: 't', label: '(t)tl', action: 'toggle-ttl' },
+            { key: 't', label: '(t)tl: auto/5m/1h', action: 'toggle-ttl' },
             { key: 'h', label: '(h)ide when empty', action: 'toggle-hide' },
             { key: 'g', label: '(g)lyph', action: 'edit-symbol-override' }
         ]);

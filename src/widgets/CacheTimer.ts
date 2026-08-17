@@ -377,7 +377,7 @@ export class CacheTimerWidget implements Widget {
 
     getCustomKeybinds(): CustomKeybind[] {
         return [
-            { key: 't', label: '(t)tl', action: TOGGLE_TTL_ACTION },
+            { key: 't', label: '(t)tl: auto/5m/1h', action: TOGGLE_TTL_ACTION },
             { key: 'h', label: '(h)ide when empty', action: TOGGLE_HIDE_ACTION },
             getSymbolKeybind()
         ];
