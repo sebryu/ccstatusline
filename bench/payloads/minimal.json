@@ -1,0 +1,7 @@
+{
+  "hook_event_name": "Status",
+  "session_id": "bench-minimal",
+  "transcript_path": "/tmp/cclse-bench-empty.jsonl",
+  "cwd": "/tmp",
+  "model": { "id": "claude-opus-4-7", "display_name": "Opus 4.7" }
+}

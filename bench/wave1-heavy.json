@@ -1,0 +1,87 @@
+{
+  "args": {
+    "runs": 20,
+    "bin": "/tmp/ccsl-inspect/package/dist/ccstatusline.js",
+    "binArgs": [
+      "--config",
+      "bench/heavy.settings.json"
+    ],
+    "env": {},
+    "alt": "dist/ccstatusline.js",
+    "jsonOut": "bench/wave1-heavy.json"
+  },
+  "rows": [
+    {
+      "bin": "current",
+      "payload": "minimal.json",
+      "stats": {
+        "n": 20,
+        "min": 148.529875,
+        "p50": 152.588542,
+        "p95": 168.336708,
+        "max": 169.705917,
+        "mean": 154.93923335
+      }
+    },
+    {
+      "bin": "alt",
+      "payload": "minimal.json",
+      "stats": {
+        "n": 20,
+        "min": 140.609083,
+        "p50": 147.601542,
+        "p95": 169.9665,
+        "max": 184.196916,
+        "mean": 152.63153544999997
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "default.json",
+      "stats": {
+        "n": 20,
+        "min": 147.877916,
+        "p50": 152.026541,
+        "p95": 161.007042,
+        "max": 166.657625,
+        "mean": 153.47328950000002
+      }
+    },
+    {
+      "bin": "alt",
+      "payload": "default.json",
+      "stats": {
+        "n": 20,
+        "min": 136.887833,
+        "p50": 142.297917,
+        "p95": 149.437583,
+        "max": 152.678334,
+        "mean": 143.27957925
+      }
+    },
+    {
+      "bin": "current",
+      "payload": "large-transcript.json",
+      "stats": {
+        "n": 20,
+        "min": 161.548833,
+        "p50": 173.495208,
+        "p95": 188.749,
+        "max": 189.821334,
+        "mean": 174.4027063
+      }
+    },
+    {
+      "bin": "alt",
+      "payload": "large-transcript.json",
+      "stats": {
+        "n": 20,
+        "min": 151.208292,
+        "p50": 156.144708,
+        "p95": 163.935709,
+        "max": 166.477167,
+        "mean": 157.2498292
+      }
+    }
+  ]
+}

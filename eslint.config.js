@@ -141,7 +141,8 @@ export default ts.config([
             '**/dist/',
             '**/node_modules/',
             '**/*.js',
-            '!eslint.config.js'
+            '!eslint.config.js',
+            'bench/'
         ]
     }
 ]);

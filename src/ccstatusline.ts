@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 import chalk from 'chalk';
 
-import { runTUI } from './tui';
 import type {
     SkillsMetrics,
     SpeedMetrics,
@@ -353,6 +352,10 @@ async function main() {
             void updatemessage;
             await saveSettings(newSettings);
         }
+        // Dynamic import so the TUI bundle (React/Ink/etc.) is not loaded on
+        // the per-refresh render path. The bundler treats this as a split
+        // point under `--splitting`, dropping ~2.5 MiB from the render chunk.
+        const { runTUI } = await import('./tui');
         runTUI();
     }
 }

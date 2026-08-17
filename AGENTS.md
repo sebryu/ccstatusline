@@ -149,3 +149,45 @@ Default to using Bun instead of Node.js:
   - Run tests with `bun test` or `bun test --watch` for watch mode
   - Test configuration: vitest.config.ts
   - Manual testing also available via piped input and TUI interaction
+
+## Fork-only: why the live status line runs from a separate clone
+
+> This section exists only on this private fork (`perf/wave-1`), not upstream. It documents a
+> machine-level setup decision that is otherwise invisible from the code. Full detail and the
+> benchmark methodology live in `FORK_README.md`.
+
+Claude Code's `statusLine` command does **not** point at this working tree. It runs:
+
+```
+bun /Users/sebryu/.local/share/ccstatusline-live/dist/ccstatusline.js
+```
+
+That clone is a build output only; this repo stays the source of truth. Refresh both with
+`ccstatusline-update` (`~/.local/bin/ccstatusline-update`).
+
+**Why a separate clone, not this tree.** Pointing `statusLine` at `src/` or `dist/` here means
+every branch switch silently changes the live status line, a mid-edit broken state breaks it
+instantly, and `bun run build` (which starts with `rm -rf dist/*`) blanks it for a second or two.
+The clone decouples development from the thing rendering on every refresh.
+
+**Why `bun`, not `node`.** On the *same* bundle, `bun` is ~14% faster than `node`
+(167.0 ms → 143.6 ms p50). At this scale most of the wall clock is process startup, not our code,
+so the runtime is worth more than any single optimization in this repo — and it is free.
+
+**Why this fork at all** (measured 2026-08-14 vs upstream 2.2.27, real 13-widget config):
+
+| scenario | upstream | fork | Δ |
+|---|---|---|---|
+| typical session (454 KiB transcript), `bun` | 158.3 ms | 143.6 ms | −9.3% |
+| typical session, `node` | 186.9 ms | 167.0 ms | −10.6% |
+| heavy session (36 MiB transcript), `bun` | 225.6 ms | 197.6 ms | −12.4% |
+
+The gains are real and survived 80 upstream commits, including upstream's own render-path fix —
+they are orthogonal (bundle load + JSONL read cache). But be honest about scale: ~10% is 15–25 ms
+per refresh, which nobody perceives. The fork is worth keeping because it is cheap to maintain
+(conflict-free rebase, one-command update), not because it is felt. The largest remaining upside
+is wave 2, not further micro-tuning — see `FORK_README.md`.
+
+**When benchmarking**, interleave samples round-robin between bins. Measuring each bin in a
+consecutive block let machine drift push p50 and mean apart by 20 ms+ on darwin/arm64, which is
+larger than the effect being measured.
