@@ -29,12 +29,18 @@ const TOGGLE_HIDE_ACTION = 'toggle-hide';
 
 // Anthropic's ephemeral prompt cache defaults to a 5-minute TTL, but Claude Code
 // also writes 1-hour breakpoints (cache_control ttl: "1h") for the stable prefix.
-// The expiry itself is never exposed (the transcript only records token counts),
-// so this is a best-effort countdown from the last turn; the TTL is configurable
-// to match whichever tier the user cares about.
+// The expiry timestamp is never exposed, so this is a best-effort countdown from
+// the last turn. Which tier is in play *is* recoverable, though: every cache
+// write is billed per tier under usage.cache_creation, so the transcript records
+// what the server actually did rather than what the client asked for. The tier
+// varies per session (plan, model and account all move it), which is why
+// detection beats any fixed default.
 const TTL_METADATA_KEY = 'ttlSeconds';
+const TTL_AUTO = 'auto';
 const DEFAULT_TTL_SECONDS = 300;
-const TTL_OPTIONS = [300, 3600] as const; // 5 minutes, 1 hour
+// Cycled by the (t)tl keybind. Auto is the absence of the key, so a widget left
+// at its defaults stores no metadata at all.
+const TTL_CYCLE = [TTL_AUTO, '300', '3600'] as const; // detect, 5 minutes, 1 hour
 const TOGGLE_TTL_ACTION = 'toggle-ttl';
 
 const SAFETY_MARGIN = 5; // display as COLD 5s before actual expiry
@@ -57,6 +63,12 @@ interface TranscriptEntry {
         usage?: {
             cache_read_input_tokens?: number;
             cache_creation_input_tokens?: number;
+            // Per-tier breakdown of cache_creation_input_tokens. Present only on
+            // requests that wrote the cache; a pure cache read carries no tier.
+            cache_creation?: {
+                ephemeral_5m_input_tokens?: number;
+                ephemeral_1h_input_tokens?: number;
+            };
         };
     };
 }
@@ -70,6 +82,28 @@ function hasCacheActivity(entry: TranscriptEntry): boolean {
         return true;
     }
     return (usage.cache_read_input_tokens ?? 0) + (usage.cache_creation_input_tokens ?? 0) > 0;
+}
+
+/**
+ * The TTL tier this row's cache write was billed at, or null when the row wrote
+ * nothing (a pure cache read, or an older transcript with no breakdown).
+ *
+ * A request can write both tiers at once — a 1-hour breakpoint on the stable
+ * prefix and a 5-minute one on the tail. Whichever tier holds more of the
+ * written tokens governs how much of the prefix survives, so that one wins; an
+ * exact tie resolves to the longer window.
+ */
+function detectTtlSeconds(entry: TranscriptEntry): number | null {
+    const breakdown = entry.message?.usage?.cache_creation;
+    if (!breakdown) {
+        return null;
+    }
+    const fiveMinute = breakdown.ephemeral_5m_input_tokens ?? 0;
+    const oneHour = breakdown.ephemeral_1h_input_tokens ?? 0;
+    if (fiveMinute <= 0 && oneHour <= 0) {
+        return null;
+    }
+    return fiveMinute > oneHour ? 300 : 3600;
 }
 
 // A single transcript record can exceed the initial tail read (pasted prompts
@@ -102,6 +136,22 @@ function readFileTail(filePath: string, bytes: number): { text: string; isComple
 
 type TranscriptState = { isWorking: true } | { isWorking: false; lastAssistant: Date | null };
 
+// The countdown anchor plus the TTL tier observed in the same tail. A null tier
+// means the tail held no cache write to read one from.
+interface TranscriptInfo {
+    state: TranscriptState;
+    detectedTtlSeconds: number | null;
+}
+
+// Scan result before the state has necessarily been resolved; a null state
+// means a larger tail may still surface one.
+interface TailScan {
+    state: TranscriptState | null;
+    detectedTtlSeconds: number | null;
+}
+
+const NOTHING_FOUND: TranscriptState = { isWorking: false, lastAssistant: null };
+
 /**
  * Find the cache state from the newest main-chain rows in the transcript tail.
  * A trailing user-role row (a prompt or a tool result, both recorded as role
@@ -111,31 +161,39 @@ type TranscriptState = { isWorking: true } | { isWorking: false; lastAssistant: 
  * actually read or wrote the cache.
  * The tail read grows until a relevant record fits in view, so a trailing
  * record larger than the initial read still resolves to a state.
+ *
+ * Only the state drives the doubling: the detected tier is best-effort within
+ * whatever tail the state needed, since re-reading purely to classify a tier
+ * would cost more than falling back to the default.
  */
-function getTranscriptState(transcriptPath: string): TranscriptState {
+function getTranscriptInfo(transcriptPath: string): TranscriptInfo {
     for (let bytes = INITIAL_TAIL_BYTES; ; bytes *= 2) {
         const tail = readFileTail(transcriptPath, bytes);
         if (!tail || tail.text.length === 0) {
-            return { isWorking: false, lastAssistant: null };
+            return { state: NOTHING_FOUND, detectedTtlSeconds: null };
         }
-        const state = scanTailForState(tail.text);
-        if (state) {
-            return state;
+        const scan = scanTailForState(tail.text);
+        if (scan.state) {
+            return { state: scan.state, detectedTtlSeconds: scan.detectedTtlSeconds };
         }
         if (tail.isComplete) {
-            return { isWorking: false, lastAssistant: null };
+            return { state: NOTHING_FOUND, detectedTtlSeconds: scan.detectedTtlSeconds };
         }
     }
 }
 
-// Scan the tail's lines newest-first for the state; null means no relevant
-// record was found (so a larger tail may still surface one).
-function scanTailForState(tail: string): TranscriptState | null {
+// Scan the tail's lines newest-first for the state and the newest TTL tier.
+// The anchor row usually carries the tier too, so the common case still stops
+// at the first cache event; the scan only runs on when the anchor was a pure
+// cache read, which records no tier.
+function scanTailForState(tail: string): TailScan {
     const lines = tail.split('\n').reverse();
     // Set once an assistant row is seen: the turn is over, so any older user
     // row belongs to a previous exchange and must not report HOT while the
     // scan keeps looking for the newest row with real cache activity.
     let turnFinished = false;
+    let state: TranscriptState | null = null;
+    let detectedTtlSeconds: number | null = null;
     for (const line of lines) {
         const trimmed = line.trim();
         if (!trimmed) {
@@ -144,57 +202,100 @@ function scanTailForState(tail: string): TranscriptState | null {
         try {
             const entry = JSON.parse(trimmed) as TranscriptEntry;
             // Sidechain (subagent) traffic runs against its own prompt prefix
-            // and never touches this conversation's cache.
+            // and never touches this conversation's cache — including its tier,
+            // which a subagent can set independently.
             if (entry.isSidechain === true) {
                 continue;
             }
             if (entry.type === 'assistant') {
                 turnFinished = true;
+                detectedTtlSeconds ??= detectTtlSeconds(entry);
                 // Synthetic API-error rows and requests with no cache reads
                 // or writes (caching disabled or unsupported) refreshed
                 // nothing: they end the in-flight state but must not anchor
                 // the countdown. A malformed timestamp is likewise no anchor.
-                if (entry.isApiErrorMessage !== true && hasCacheActivity(entry) && entry.timestamp) {
+                if (state === null && entry.isApiErrorMessage !== true && hasCacheActivity(entry) && entry.timestamp) {
                     const parsed = new Date(entry.timestamp);
                     if (!Number.isNaN(parsed.getTime())) {
-                        return { isWorking: false, lastAssistant: parsed };
+                        state = { isWorking: false, lastAssistant: parsed };
                     }
                 }
-                continue;
-            }
-            if (entry.type === 'user' && !turnFinished) {
-                return { isWorking: true };
+            } else if (entry.type === 'user' && !turnFinished) {
+                // An in-flight turn renders HOT with no countdown, so the tier
+                // it would have used is not needed.
+                return { state: { isWorking: true }, detectedTtlSeconds: null };
             }
         } catch {
             continue;
         }
+        if (state !== null && detectedTtlSeconds !== null) {
+            break;
+        }
+    }
+    return { state, detectedTtlSeconds };
+}
+
+// The user's explicit TTL override in seconds, or null to detect it. The (t)tl
+// keybind cycles auto/5m/1h, and any other positive value can be set directly
+// in settings.json. A malformed value reads as auto rather than silently
+// pinning the countdown to a tier the user never chose.
+function getExplicitTtlSeconds(item: WidgetItem): number | null {
+    const raw = item.metadata?.[TTL_METADATA_KEY];
+    if (raw === undefined || raw === TTL_AUTO) {
+        return null;
+    }
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isFinite(parsed) && parsed > SAFETY_MARGIN ? parsed : null;
+}
+
+// Claude Code's own truthiness test for these variables: anything else is off.
+const ENV_TRUTHY_VALUES = ['1', 'true', 'yes', 'on'];
+
+function isEnvEnabled(value: string | undefined): boolean {
+    return value !== undefined && ENV_TRUTHY_VALUES.includes(value.toLowerCase().trim());
+}
+
+/**
+ * The tier Claude Code was told to request, for sessions whose transcript holds
+ * no cache write to read the real one from. A forced 5m wins outright over an
+ * enabled 1h, matching Claude Code's precedence.
+ *
+ * Only useful when one of these is actually set: left unset, the tier is
+ * decided by a remote allowlist and the account's overage state, neither of
+ * which is visible here. These are undocumented internal variables, so this is
+ * a hint below the transcript, never above it — and if they are ever renamed
+ * the lookup simply stops matching and the default applies.
+ */
+function getEnvTtlSeconds(): number | null {
+    if (isEnvEnabled(process.env.FORCE_PROMPT_CACHING_5M)) {
+        return 300;
+    }
+    if (isEnvEnabled(process.env.ENABLE_PROMPT_CACHING_1H)) {
+        return 3600;
     }
     return null;
 }
 
-// The configured TTL in seconds. Defaults to 5 minutes; the (t)tl keybind cycles
-// 5m/1h, and any other positive value can be set directly in settings.json.
-function getTtlSeconds(item: WidgetItem): number {
-    const raw = item.metadata?.[TTL_METADATA_KEY];
-    if (raw === undefined) {
-        return DEFAULT_TTL_SECONDS;
-    }
-    const parsed = Number.parseInt(raw, 10);
-    return Number.isFinite(parsed) && parsed > SAFETY_MARGIN ? parsed : DEFAULT_TTL_SECONDS;
+// An explicit override wins over what the transcript observed, which wins over
+// what the environment requested, which wins over the 5-minute default the API
+// applies when nothing says otherwise.
+function resolveTtlSeconds(item: WidgetItem, detectedTtlSeconds: number | null): number {
+    return getExplicitTtlSeconds(item) ?? detectedTtlSeconds ?? getEnvTtlSeconds() ?? DEFAULT_TTL_SECONDS;
 }
 
 function cycleTtl(item: WidgetItem): WidgetItem {
-    const current = getTtlSeconds(item);
-    const index = (TTL_OPTIONS as readonly number[]).indexOf(current);
-    const next = TTL_OPTIONS[(index + 1) % TTL_OPTIONS.length] ?? DEFAULT_TTL_SECONDS;
-    if (next === DEFAULT_TTL_SECONDS) {
+    const raw = item.metadata?.[TTL_METADATA_KEY] ?? TTL_AUTO;
+    // An unrecognised value (including a malformed one) cycles back to auto.
+    const index = (TTL_CYCLE as readonly string[]).indexOf(raw);
+    const next = TTL_CYCLE[(index + 1) % TTL_CYCLE.length] ?? TTL_AUTO;
+    if (next === TTL_AUTO) {
         return removeMetadataKeys(item, [TTL_METADATA_KEY]);
     }
     return {
         ...item,
         metadata: {
             ...item.metadata,
-            [TTL_METADATA_KEY]: String(next)
+            [TTL_METADATA_KEY]: next
         }
     };
 }
@@ -239,16 +340,17 @@ function withGlyph(symbol: string, text: string): string {
 
 export class CacheTimerWidget implements Widget {
     getDefaultColor(): string { return 'brightCyan'; }
-    getDescription(): string { return 'Shows time remaining on the prompt cache TTL (5m by default, 1h configurable)'; }
+    getDescription(): string { return 'Shows time remaining on the prompt cache TTL (detected from the transcript, 5m/1h pinnable)'; }
     getDisplayName(): string { return 'Cache Timer'; }
     getCategory(): string { return 'Session'; }
 
     getEditorDisplay(item: WidgetItem): WidgetEditorDisplay {
         const modifiers: string[] = [];
 
-        const ttlSeconds = getTtlSeconds(item);
-        if (ttlSeconds !== DEFAULT_TTL_SECONDS) {
-            modifiers.push(`ttl ${formatTtlLabel(ttlSeconds)}`);
+        // Auto is the default and needs no annotation; only a pinned tier does.
+        const explicitTtlSeconds = getExplicitTtlSeconds(item);
+        if (explicitTtlSeconds !== null) {
+            modifiers.push(`ttl ${formatTtlLabel(explicitTtlSeconds)}`);
         }
         if (isMetadataFlagEnabled(item, HIDE_WHEN_EMPTY_KEY)) {
             modifiers.push('hide when empty');
@@ -284,7 +386,7 @@ export class CacheTimerWidget implements Widget {
             return hideWhenEmpty ? null : formatRawOrLabeledValue(item, 'Cache: ', 'n/a');
         }
 
-        const state = getTranscriptState(transcriptPath);
+        const { state, detectedTtlSeconds } = getTranscriptInfo(transcriptPath);
 
         if (state.isWorking) {
             return formatRawOrLabeledValue(item, 'Cache: ', withGlyph(getSlotSymbol(item, HOT_SLOT), 'HOT'));
@@ -295,7 +397,7 @@ export class CacheTimerWidget implements Widget {
             return hideWhenEmpty ? null : formatRawOrLabeledValue(item, 'Cache: ', 'n/a');
         }
 
-        const ttlSeconds = getTtlSeconds(item);
+        const ttlSeconds = resolveTtlSeconds(item, detectedTtlSeconds);
         const remaining = getRemainingSeconds(lastAssistant, ttlSeconds);
         const glyph = getStateSymbol(item, remaining, ttlSeconds);
 
@@ -304,7 +406,7 @@ export class CacheTimerWidget implements Widget {
 
     getCustomKeybinds(): CustomKeybind[] {
         return [
-            { key: 't', label: '(t)tl', action: TOGGLE_TTL_ACTION },
+            { key: 't', label: '(t)tl: auto/5m/1h', action: TOGGLE_TTL_ACTION },
             { key: 'h', label: '(h)ide when empty', action: TOGGLE_HIDE_ACTION },
             getSymbolKeybind()
         ];
