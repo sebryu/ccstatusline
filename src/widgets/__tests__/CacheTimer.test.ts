@@ -25,6 +25,18 @@ const apiError = (seconds: number): string => JSON.stringify({ type: 'assistant'
 const assistantUsage = (seconds: number, usage: object): string => JSON.stringify({ type: 'assistant', timestamp: isoAgo(seconds), message: { usage } });
 const noCacheUsage = { cache_read_input_tokens: 0, cache_creation_input_tokens: 0 };
 
+// User rows Claude Code writes locally, with no request behind them.
+const localUser = (content: string, extra: object = {}): string => JSON.stringify({ type: 'user', isSidechain: false, message: { role: 'user', content }, ...extra });
+const slashCommand = localUser('<command-name>/clear</command-name>\n            <command-message>clear</command-message>');
+const commandStdout = localUser('<local-command-stdout>Set model to Opus</local-command-stdout>');
+const commandCaveat = localUser('<local-command-caveat>Caveat: the messages below were generated while running local commands.</local-command-caveat>', { isMeta: true });
+const metaUser = localUser('A session-scoped Stop hook is now active', { isMeta: true });
+const compactSummary = localUser('This session is being continued from a previous conversation...', { isCompactSummary: true });
+const transcriptOnly = localUser('rendered locally', { isVisibleInTranscriptOnly: true });
+const systemRow = (subtype: string, seconds: number): string => JSON.stringify({ type: 'system', subtype, isSidechain: false, timestamp: isoAgo(seconds) });
+// A genuine pending tool result: role 'user', but content blocks, not a string.
+const toolResult = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ tool_use_id: 't1', type: 'tool_result', content: 'ok' }] } });
+
 describe('CacheTimer widget', () => {
     let tmpDir: string;
     let fileCounter = 0;
@@ -233,5 +245,76 @@ describe('CacheTimer widget', () => {
         const widget = new CacheTimerWidget();
         expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: '3600' } })).modifierText).toBe('(ttl 1h)');
         expect(widget.getEditorDisplay(item({ metadata: { ttlSeconds: '3600', hideWhenEmpty: 'true' } })).modifierText).toBe('(ttl 1h, hide when empty)');
+    });
+
+    describe('local-only rows', () => {
+        const localRows = [
+            { label: 'a slash-command echo', line: slashCommand },
+            { label: 'captured command output', line: commandStdout },
+            { label: 'a local-command caveat', line: commandCaveat },
+            { label: 'a hook-injected meta row', line: metaUser },
+            { label: 'a compaction summary', line: compactSummary },
+            { label: 'a transcript-only row', line: transcriptOnly }
+        ];
+
+        for (const { label, line } of localRows) {
+            it(`does not report HOT for ${label}`, () => {
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item(), transcriptContext([assistant(400), line]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            });
+        }
+
+        it('scans past a whole stack of local rows to the last real cache event', () => {
+            const widget = new CacheTimerWidget();
+            const context = transcriptContext([assistant(400), ...localRows.map(r => r.line)]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('stays cold through the row sequence a real /compact leaves behind', () => {
+            const widget = new CacheTimerWidget();
+            const cached = assistantUsage(400, { cache_read_input_tokens: 100, cache_creation_input_tokens: 0 });
+            const context = transcriptContext([cached, systemRow('compact_boundary', 5), compactSummary, commandCaveat, slashCommand]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('does not restart a live countdown', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(10), slashCommand]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('still reports HOT for a pending tool result', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(400), toolResult]), DEFAULT_SETTINGS)).toBe('Cache: 🔥 HOT');
+        });
+
+        it('still reports HOT for a real prompt sitting under a local row', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(400), slashCommand, pendingUser]), DEFAULT_SETTINGS)).toBe('Cache: 🔥 HOT');
+            expect(widget.render(item(), transcriptContext([assistant(400), pendingUser, commandStdout]), DEFAULT_SETTINGS)).toBe('Cache: 🔥 HOT');
+        });
+
+        it('neither anchors the countdown nor reports HOT for system rows', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(400), systemRow('compact_boundary', 5)]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('reports no data when local rows are all there is', () => {
+            const widget = new CacheTimerWidget();
+            const context = transcriptContext([slashCommand, commandStdout, compactSummary]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: n/a');
+            expect(widget.render(item(hidden), context, DEFAULT_SETTINGS)).toBeNull();
+        });
+
+        it('keeps resolving the TTL across skipped rows', () => {
+            const widget = new CacheTimerWidget();
+            const context = transcriptContext([assistant(600), slashCommand, commandStdout]);
+            expect(widget.render(item({ metadata: { ttlSeconds: '3600' } }), context, DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('skips a local row that exceeds the initial 32 KiB tail read', () => {
+            const widget = new CacheTimerWidget();
+            const bigStdout = localUser(`<local-command-stdout>${'x'.repeat(64 * 1024)}</local-command-stdout>`);
+            expect(widget.render(item(), transcriptContext([assistant(10), bigStdout]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
     });
 });

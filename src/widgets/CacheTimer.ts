@@ -9,6 +9,7 @@ import type {
     WidgetEditorProps,
     WidgetItem
 } from '../types/Widget';
+import { isLocalOnlyUserRow } from '../utils/transcript-rows';
 
 import { makeModifierText } from './shared/editor-display';
 import {
@@ -53,7 +54,15 @@ interface TranscriptEntry {
     timestamp?: string;
     isSidechain?: boolean;
     isApiErrorMessage?: boolean;
+    // Flags Claude Code sets on user rows it rendered locally rather than sent
+    // to the API; see isLocalOnlyUserRow.
+    isMeta?: boolean;
+    isCompactSummary?: boolean;
+    isVisibleInTranscriptOnly?: boolean;
     message?: {
+        // A string for a typed prompt, an array of content blocks for a tool
+        // result — never assume either.
+        content?: unknown;
         usage?: {
             cache_read_input_tokens?: number;
             cache_creation_input_tokens?: number;
@@ -106,7 +115,9 @@ type TranscriptState = { isWorking: true } | { isWorking: false; lastAssistant: 
  * Find the cache state from the newest main-chain rows in the transcript tail.
  * A trailing user-role row (a prompt or a tool result, both recorded as role
  * 'user' by Claude Code) means a turn is in flight and the cache is being
- * refreshed, so report { isWorking: true }. Once an assistant row has ended
+ * refreshed, so report { isWorking: true } — unless it is one of the rows
+ * Claude Code renders locally without a request (see isLocalOnlyUserRow).
+ * Once an assistant row has ended
  * the turn, the countdown anchors on the newest assistant row whose request
  * actually read or wrote the cache.
  * The tail read grows until a relevant record fits in view, so a trailing
@@ -162,7 +173,12 @@ function scanTailForState(tail: string): TranscriptState | null {
                 }
                 continue;
             }
-            if (entry.type === 'user' && !turnFinished) {
+            // Locally rendered user rows (slash-command echoes, command
+            // output, hook injections, compaction summaries) never reached the
+            // API, so they are transparent here: the scan falls through to
+            // older rows without ending the turn, and a real pending row
+            // beneath one still reports HOT.
+            if (entry.type === 'user' && !turnFinished && !isLocalOnlyUserRow(entry)) {
                 return { isWorking: true };
             }
         } catch {
