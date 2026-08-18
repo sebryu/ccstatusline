@@ -6,6 +6,11 @@ import type {
     TokenMetrics,
     TranscriptLine
 } from '../types';
+import type {
+    ModelTokenBucketMap,
+    ModelTokenBuckets,
+    TokenBucket
+} from '../types/TokenMetrics';
 
 import {
     getCompactBoundaryPostTokens,
@@ -15,6 +20,7 @@ import {
     parseJsonlLine,
     readJsonlLines
 } from './jsonl-lines';
+import { LONG_CONTEXT_THRESHOLD_TOKENS } from './pricing';
 
 export interface SpeedMetricsOptions {
     includeSubagents?: boolean;
@@ -83,6 +89,177 @@ function getReferencedSubagentIds(lines: string[]): Set<string> {
     }
 
     return agentIds;
+}
+
+function createTokenBucket(): TokenBucket {
+    return {
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreation5mTokens: 0,
+        cacheCreation1hTokens: 0
+    };
+}
+
+function createModelTokenBuckets(): ModelTokenBuckets {
+    return { standard: createTokenBucket(), longContext: createTokenBucket() };
+}
+
+/**
+ * Adds one usage entry to its model's bucket.
+ *
+ * The entry lands in the long-context bucket when its prompt (input plus both
+ * kinds of cached tokens) crosses the threshold where long-context models bill
+ * at a premium, so the two tiers can be priced separately later.
+ */
+function accumulateModelUsage(byModel: ModelTokenBucketMap, entry: TranscriptLine): void {
+    const usage = entry.message?.usage;
+    const model = entry.message?.model;
+    if (!usage || !model) {
+        return;
+    }
+
+    const inputTokens = usage.input_tokens || 0;
+    const outputTokens = usage.output_tokens || 0;
+    const cacheReadTokens = usage.cache_read_input_tokens ?? 0;
+    const totalCacheCreation = usage.cache_creation_input_tokens ?? 0;
+
+    // Older transcripts carry only the aggregate cache_creation_input_tokens.
+    // Without the TTL split, attribute it to the cheaper 5m tier so the
+    // estimate errs low rather than inventing a premium that may not apply.
+    const cacheCreation1hTokens = usage.cache_creation?.ephemeral_1h_input_tokens ?? 0;
+    const cacheCreation5mTokens = usage.cache_creation?.ephemeral_5m_input_tokens
+        ?? Math.max(totalCacheCreation - cacheCreation1hTokens, 0);
+
+    const buckets = byModel[model] ?? createModelTokenBuckets();
+    byModel[model] = buckets;
+
+    const promptTokens = inputTokens + cacheReadTokens + totalCacheCreation;
+    const bucket = promptTokens > LONG_CONTEXT_THRESHOLD_TOKENS ? buckets.longContext : buckets.standard;
+
+    bucket.inputTokens += inputTokens;
+    bucket.outputTokens += outputTokens;
+    bucket.cacheReadTokens += cacheReadTokens;
+    bucket.cacheCreation5mTokens += cacheCreation5mTokens;
+    bucket.cacheCreation1hTokens += cacheCreation1hTokens;
+}
+
+/**
+ * Builds per-model token buckets from usage entries, counting each API request once.
+ *
+ * A single request emits one transcript line per content block - four parallel
+ * tool calls produce four lines - and every one of them repeats the request's
+ * full usage totals. Summing the lines therefore multiplies the bill, so entries
+ * are keyed by requestId and the last line for each request wins (during
+ * streaming that is the finalized one). Entries with no requestId, such as those
+ * in older transcripts, are counted individually.
+ */
+export function buildModelTokenBuckets(entries: TranscriptLine[]): ModelTokenBucketMap {
+    const byModel: ModelTokenBucketMap = {};
+    const lastEntryPerRequest = new Map<string, TranscriptLine>();
+
+    for (const entry of entries) {
+        if (!entry.message?.usage) {
+            continue;
+        }
+
+        if (entry.requestId) {
+            lastEntryPerRequest.set(entry.requestId, entry);
+            continue;
+        }
+
+        accumulateModelUsage(byModel, entry);
+    }
+
+    for (const entry of lastEntryPerRequest.values()) {
+        accumulateModelUsage(byModel, entry);
+    }
+
+    return byModel;
+}
+
+export function mergeModelTokenBuckets(target: ModelTokenBucketMap, source: ModelTokenBucketMap): ModelTokenBucketMap {
+    for (const [model, buckets] of Object.entries(source)) {
+        const existing = target[model] ?? createModelTokenBuckets();
+        target[model] = existing;
+
+        for (const tier of ['standard', 'longContext'] as const) {
+            existing[tier].inputTokens += buckets[tier].inputTokens;
+            existing[tier].outputTokens += buckets[tier].outputTokens;
+            existing[tier].cacheReadTokens += buckets[tier].cacheReadTokens;
+            existing[tier].cacheCreation5mTokens += buckets[tier].cacheCreation5mTokens;
+            existing[tier].cacheCreation1hTokens += buckets[tier].cacheCreation1hTokens;
+        }
+    }
+
+    return target;
+}
+
+/**
+ * Claude Code writes several JSONL entries per API call while streaming:
+ * intermediate ones carry stop_reason: null and the final one carries a string.
+ * Counting every entry would multiply the tokens of each turn, so keep the
+ * finalized entries plus the single in-flight one. Transcripts with no
+ * stop_reason field at all are counted whole.
+ */
+export function selectCountedEntries<T extends { data: TranscriptLine }>(
+    parsedEntries: T[],
+    hasStopReasonField: boolean
+): T[] {
+    if (!hasStopReasonField) {
+        return parsedEntries;
+    }
+
+    return parsedEntries.filter((entry, index) => {
+        const stopReason = entry.data.message?.stop_reason;
+        return Boolean(stopReason) || (stopReason === null && index === parsedEntries.length - 1);
+    });
+}
+
+/**
+ * Per-model tokens spent by subagents whose turns live in their own transcript
+ * files rather than in the parent session's. Those turns are billed like any
+ * other, so omitting them under-reports a session that delegated work.
+ */
+export async function getSubagentModelBuckets(transcriptPath: string): Promise<ModelTokenBucketMap> {
+    const byModel: ModelTokenBucketMap = {};
+
+    try {
+        if (!fs.existsSync(transcriptPath)) {
+            return byModel;
+        }
+
+        const mainLines = await readJsonlLines(transcriptPath);
+        const referencedAgentIds = getReferencedSubagentIds(mainLines);
+        const subagentPaths = getSubagentTranscriptPaths(transcriptPath, referencedAgentIds);
+
+        const bucketsPerAgent = await Promise.all(subagentPaths.map(async (subagentPath) => {
+            try {
+                const lines = await readJsonlLines(subagentPath);
+                const entries: TranscriptLine[] = [];
+                for (const line of lines) {
+                    const data = parseJsonlLine(line) as TranscriptLine | null;
+                    if (data?.message?.usage) {
+                        entries.push(data);
+                    }
+                }
+
+                return buildModelTokenBuckets(entries);
+            } catch {
+                return null;
+            }
+        }));
+
+        for (const agentBuckets of bucketsPerAgent) {
+            if (agentBuckets) {
+                mergeModelTokenBuckets(byModel, agentBuckets);
+            }
+        }
+    } catch {
+        return byModel;
+    }
+
+    return byModel;
 }
 
 export async function getSessionDuration(transcriptPath: string): Promise<string | null> {
@@ -156,7 +333,7 @@ export async function getTokenMetrics(transcriptPath: string): Promise<TokenMetr
     try {
         // Use Node.js-compatible file reading
         if (!fs.existsSync(transcriptPath)) {
-            return { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, contextLength: 0 };
+            return { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, contextLength: 0, byModel: {} };
         }
 
         const lines = await readJsonlLines(transcriptPath);
@@ -204,12 +381,7 @@ export async function getTokenMetrics(transcriptPath: string): Promise<TokenMetr
             }
         }
 
-        const entriesToCount = hasStopReasonField
-            ? parsedEntries.filter((entry, index) => {
-                const stopReason = entry.data.message?.stop_reason;
-                return Boolean(stopReason) || (stopReason === null && index === parsedEntries.length - 1);
-            })
-            : parsedEntries;
+        const entriesToCount = selectCountedEntries(parsedEntries, hasStopReasonField);
 
         for (const { data, lineIndex } of entriesToCount) {
             const usage = data.message?.usage;
@@ -257,12 +429,16 @@ export async function getTokenMetrics(transcriptPath: string): Promise<TokenMetr
             ? (contextLengthFromEntry(mostRecentPostCompactionEntry) ?? lastCompactBoundaryPostTokens ?? 0)
             : (contextLengthFromEntry(mostRecentMainChainEntry) ?? 0);
 
+        // Cost is derived from every usage entry with per-request deduping, which is
+        // stricter than the stop_reason rule the legacy totals above still use.
+        const byModel = buildModelTokenBuckets(parsedEntries.map(entry => entry.data));
+
         const cachedTokens = cacheReadTokens + cacheCreationTokens;
         const totalTokens = inputTokens + outputTokens + cachedTokens;
 
-        return { inputTokens, outputTokens, cachedTokens, cacheReadTokens, cacheCreationTokens, totalTokens, contextLength };
+        return { inputTokens, outputTokens, cachedTokens, cacheReadTokens, cacheCreationTokens, totalTokens, contextLength, byModel };
     } catch {
-        return { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, contextLength: 0 };
+        return { inputTokens: 0, outputTokens: 0, cachedTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0, totalTokens: 0, contextLength: 0, byModel: {} };
     }
 }
 
@@ -473,7 +649,7 @@ function buildEmptyWindowedMetrics(windowSeconds: number[]): Record<string, Spee
     return windowed;
 }
 
-function getSubagentTranscriptPaths(transcriptPath: string, referencedAgentIds: Set<string>): string[] {
+export function getSubagentTranscriptPaths(transcriptPath: string, referencedAgentIds: Set<string>): string[] {
     if (referencedAgentIds.size === 0) {
         return [];
     }

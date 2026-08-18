@@ -159,6 +159,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 56,
             cacheCreationTokens: 36,
             totalTokens: 2032,
+            byModel: {},
             contextLength: 250
         });
     });
@@ -227,6 +228,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 35000,   // 12000 + 23000
             cacheCreationTokens: 11500, // 11000 + 500
             totalTokens: 47052,       // 2 + 550 + 46500
+            byModel: {},
             contextLength: 23501      // last main-chain final entry: 1 + 23000 + 500
         });
     });
@@ -274,6 +276,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 1000,
             cacheCreationTokens: 200,
             totalTokens: 1344,
+            byModel: {},
             contextLength: 1204
         });
     });
@@ -329,6 +332,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 300,
             cacheCreationTokens: 75,
             totalTokens: 580,
+            byModel: {},
             contextLength: 228
         });
     });
@@ -368,6 +372,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 50,
             cacheCreationTokens: 30,
             totalTokens: 510,
+            byModel: {},
             contextLength: 250
         });
     });
@@ -410,6 +415,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 190000,
             cacheCreationTokens: 40000,
             totalTokens: 235100,
+            byModel: {},
             contextLength: 18000
         });
     });
@@ -456,6 +462,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 207000,
             cacheCreationTokens: 40500,
             totalTokens: 252850,
+            byModel: {},
             contextLength: 17700
         });
     });
@@ -496,6 +503,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 190000,
             cacheCreationTokens: 40000,
             totalTokens: 235100,
+            byModel: {},
             contextLength: 0
         });
     });
@@ -509,6 +517,7 @@ describe('jsonl transcript metrics', () => {
             cacheReadTokens: 0,
             cacheCreationTokens: 0,
             totalTokens: 0,
+            byModel: {},
             contextLength: 0
         });
     });

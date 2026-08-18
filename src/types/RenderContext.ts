@@ -5,7 +5,10 @@ import type {
 
 import type { SpeedMetrics } from './SpeedMetrics';
 import type { StatusJSON } from './StatusJSON';
-import type { TokenMetrics } from './TokenMetrics';
+import type {
+    ModelTokenBucketMap,
+    TokenMetrics
+} from './TokenMetrics';
 
 export interface RenderUsageData {
     sessionUsage?: number;
@@ -35,6 +38,9 @@ export interface CompactionData {
 export interface RenderContext {
     data?: StatusJSON;
     tokenMetrics?: TokenMetrics | null;
+    // Per-model tokens from subagents that wrote their own transcript files.
+    // Loaded only when a widget needs them, since it costs extra file reads.
+    subagentModelBuckets?: ModelTokenBucketMap | null;
     speedMetrics?: SpeedMetrics | null;
     windowedSpeedMetrics?: Record<string, SpeedMetrics> | null;
     usageData?: RenderUsageData | null;
