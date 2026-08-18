@@ -28,14 +28,21 @@ const noCacheUsage = { cache_read_input_tokens: 0, cache_creation_input_tokens: 
 // User rows Claude Code writes locally, with no request behind them.
 const localUser = (content: string, extra: object = {}): string => JSON.stringify({ type: 'user', isSidechain: false, message: { role: 'user', content }, ...extra });
 const slashCommand = localUser('<command-name>/clear</command-name>\n            <command-message>clear</command-message>');
+// Claude Code flipped the tag order: newer echoes lead with <command-message>.
+const slashCommandNewOrder = localUser('<command-message>review</command-message>\n<command-name>/review</command-name>');
 const commandStdout = localUser('<local-command-stdout>Set model to Opus</local-command-stdout>');
 const commandCaveat = localUser('<local-command-caveat>Caveat: the messages below were generated while running local commands.</local-command-caveat>', { isMeta: true });
-const metaUser = localUser('A session-scoped Stop hook is now active', { isMeta: true });
-const compactSummary = localUser('This session is being continued from a previous conversation...', { isCompactSummary: true });
+const bashInput = localUser('<bash-input>git status</bash-input>');
+const bashStdout = localUser('<bash-stdout>On branch dev</bash-stdout><bash-stderr></bash-stderr>');
+const contextUsage = localUser('## Context Usage\n- System prompt: 2.4k tokens', { isMeta: true });
+const compactSummary = localUser('This session is being continued from a previous conversation...', { isCompactSummary: true, isVisibleInTranscriptOnly: true });
 const transcriptOnly = localUser('rendered locally', { isVisibleInTranscriptOnly: true });
 const systemRow = (subtype: string, seconds: number): string => JSON.stringify({ type: 'system', subtype, isSidechain: false, timestamp: isoAgo(seconds) });
 // A genuine pending tool result: role 'user', but content blocks, not a string.
-const toolResult = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ tool_use_id: 't1', type: 'tool_result', content: 'ok' }] } });
+const blockUser = (blocks: object[], extra: object = {}): string => JSON.stringify({ type: 'user', message: { role: 'user', content: blocks }, ...extra });
+const toolResult = blockUser([{ tool_use_id: 't1', type: 'tool_result', content: 'ok' }]);
+const interrupted = blockUser([{ type: 'text', text: '[Request interrupted by user]' }]);
+const interruptedForToolUse = blockUser([{ type: 'text', text: '[Request interrupted by user for tool use]' }]);
 
 describe('CacheTimer widget', () => {
     let tmpDir: string;
@@ -250,9 +257,12 @@ describe('CacheTimer widget', () => {
     describe('local-only rows', () => {
         const localRows = [
             { label: 'a slash-command echo', line: slashCommand },
+            { label: 'a slash-command echo in the newer tag order', line: slashCommandNewOrder },
             { label: 'captured command output', line: commandStdout },
             { label: 'a local-command caveat', line: commandCaveat },
-            { label: 'a hook-injected meta row', line: metaUser },
+            { label: 'a bash-mode input echo', line: bashInput },
+            { label: 'bash-mode output', line: bashStdout },
+            { label: 'the context-usage report', line: contextUsage },
             { label: 'a compaction summary', line: compactSummary },
             { label: 'a transcript-only row', line: transcriptOnly }
         ];
@@ -316,5 +326,56 @@ describe('CacheTimer widget', () => {
             const bigStdout = localUser(`<local-command-stdout>${'x'.repeat(64 * 1024)}</local-command-stdout>`);
             expect(widget.render(item(), transcriptContext([assistant(10), bigStdout]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
         });
+    });
+
+    describe('interrupted turns', () => {
+        for (const [label, line] of [['a plain interrupt', interrupted], ['a tool-use interrupt', interruptedForToolUse]] as const) {
+            it(`ends the turn on ${label}`, () => {
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item(), transcriptContext([assistant(400), line]), DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+            });
+        }
+
+        it('ends the turn for the tool_result the interrupt cut short', () => {
+            const widget = new CacheTimerWidget();
+            // The interrupted tool_result sits directly above the marker; a scan
+            // that merely skipped the marker would still report HOT for it.
+            const context = transcriptContext([assistant(400), toolResult, interrupted]);
+            expect(widget.render(item(), context, DEFAULT_SETTINGS)).toBe('Cache: ❄️ COLD');
+        });
+
+        it('does not restart a live countdown', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(10), toolResult, interrupted]), DEFAULT_SETTINGS)).toMatch(/^Cache: 🟢 \d+:\d{2}$/);
+        });
+
+        it('reports HOT again once a new prompt follows the interrupt', () => {
+            const widget = new CacheTimerWidget();
+            expect(widget.render(item(), transcriptContext([assistant(400), interrupted, pendingUser]), DEFAULT_SETTINGS)).toBe('Cache: 🔥 HOT');
+        });
+    });
+
+    // Every row here is sent to the API and gets a real response, so the widget
+    // must report HOT. isMeta marks a row the human did not type, which is not
+    // the same as a row that never left the machine — these are the guards
+    // against filtering on it.
+    describe('rows that only look local', () => {
+        const stillHot = [
+            { label: 'a skill invocation', line: blockUser([{ type: 'text', text: 'Base directory for this skill: /Users/x/.claude/skills/demo' }], { isMeta: true }) },
+            { label: 'an autonomous-loop wakeup', line: localUser('<<autonomous-loop-dynamic>>', { isMeta: true }) },
+            { label: 'a cross-session teammate message', line: localUser('Another Claude session sent a message:\n<agent-message from="peer">hi</agent-message>', { isMeta: true }) },
+            { label: 'a Stop-hook goal prompt', line: localUser('A session-scoped Stop hook is now active with condition: finish the task', { isMeta: true }) },
+            { label: 'a pasted image', line: localUser('[Image: original 3840x2160, resized to 1092x614]', { isMeta: true }) },
+            { label: 'a pending tool result', line: toolResult },
+            { label: 'a prompt quoting a command tag mid-string', line: localUser(`why does ${'-'.repeat(2988)}<command-name> appear in my transcript?`) },
+            { label: 'a tool result quoting a caveat tag', line: blockUser([{ tool_use_id: 't1', type: 'tool_result', content: '<local-command-caveat>Caveat: ...</local-command-caveat>' }]) }
+        ];
+
+        for (const { label, line } of stillHot) {
+            it(`still reports HOT for ${label}`, () => {
+                const widget = new CacheTimerWidget();
+                expect(widget.render(item(), transcriptContext([assistant(400), line]), DEFAULT_SETTINGS)).toBe('Cache: 🔥 HOT');
+            });
+        }
     });
 });

@@ -9,7 +9,10 @@ import type {
     WidgetEditorProps,
     WidgetItem
 } from '../types/Widget';
-import { isLocalOnlyUserRow } from '../utils/transcript-rows';
+import {
+    isInterruptMarkerRow,
+    isLocalOnlyUserRow
+} from '../utils/transcript-rows';
 
 import { makeModifierText } from './shared/editor-display';
 import {
@@ -54,8 +57,8 @@ interface TranscriptEntry {
     timestamp?: string;
     isSidechain?: boolean;
     isApiErrorMessage?: boolean;
-    // Flags Claude Code sets on user rows it rendered locally rather than sent
-    // to the API; see isLocalOnlyUserRow.
+    // Row-provenance flags Claude Code sets on some user rows. Only some of
+    // these mean "never sent to the API"; see isLocalOnlyUserRow.
     isMeta?: boolean;
     isCompactSummary?: boolean;
     isVisibleInTranscriptOnly?: boolean;
@@ -173,9 +176,18 @@ function scanTailForState(tail: string): TranscriptState | null {
                 }
                 continue;
             }
+            // An interrupt ends the turn without any request completing, so it
+            // closes the in-flight state but anchors nothing. It must be
+            // handled before the user branch below: the row it interrupted is
+            // usually the pending tool_result directly above, which would
+            // otherwise be read as still in flight.
+            if (entry.type === 'user' && isInterruptMarkerRow(entry)) {
+                turnFinished = true;
+                continue;
+            }
             // Locally rendered user rows (slash-command echoes, command
-            // output, hook injections, compaction summaries) never reached the
-            // API, so they are transparent here: the scan falls through to
+            // output, the context report, compaction summaries) never reached
+            // the API, so they are transparent here: the scan falls through to
             // older rows without ending the turn, and a real pending row
             // beneath one still reports HOT.
             if (entry.type === 'user' && !turnFinished && !isLocalOnlyUserRow(entry)) {
