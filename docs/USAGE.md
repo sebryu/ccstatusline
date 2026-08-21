@@ -33,6 +33,13 @@ ccstatusline --version
 - **Sandbox Status** - Show the effective `sandbox.enabled` value from Claude Code's layered project and user settings. It can render as a glyph, `SB: ON/OFF`, or `Sandbox: ON/OFF`, with optional Nerd Font lock icons. The value is refreshed after `/sandbox` changes, but is best effort when managed or CLI settings override files or sandbox initialization fails.
 - **Thinking Effort** / **Vim Mode** / **Skills** - Show Claude thinking effort, the current vim editing mode, and skill activity from hook data. Thinking Effort reads live status JSON first, then `/model` or `/effort` transcript output, then settings fallback; it supports `low`, `medium`, `high`, `xhigh`, and `max`, shows `default` when no effort is set, and marks unknown future values with `?`. Claude Code reports Ultracode as `xhigh` in status line data; it does not expose Ultracode as a separate effort level.
 - **Session Clock** / **Session Cost** - Show elapsed session time and the current session cost in USD.
+- **ReCost** - Show session cost in USD, falling back to a reconstruction from the transcript whenever Claude Code reports `$0` - most often after resuming a session, since the reported figure is an in-memory counter that restarts at zero. Reconstructed values are prefixed `~`, and a trailing `?` means some model's tokens had no pricing entry and were left out. Tokens are priced per model and per request, splitting cache reads from 5m and 1h cache writes. Subagent transcripts are included by default; press `s` to exclude them, `a` to reconstruct even when a cost is reported, and `h` to hide the widget at zero. Override or extend the built-in rates by writing a partial table to `~/.config/ccstatusline/pricing.json`, keyed by model id or family prefix:
+
+  ```json
+  { "claude-fable-5": { "inputPerMTok": 1.5, "outputPerMTok": 7.5 } }
+  ```
+
+  The result is an estimate against list prices, not a bill: subscription plans are not charged per token. A forked session's transcript also carries its ancestor's history, so its reconstruction covers the whole lineage rather than only what the fork itself spent.
 
 ### Git
 

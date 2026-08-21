@@ -9,6 +9,7 @@ import type {
 import type { RenderContext } from './types/RenderContext';
 import type { StatusJSON } from './types/StatusJSON';
 import { StatusJSONSchema } from './types/StatusJSON';
+import type { ModelTokenBucketMap } from './types/TokenMetrics';
 import { getVisibleText } from './utils/ansi';
 import { updateColorMap } from './utils/colors';
 import {
@@ -29,6 +30,7 @@ import { handleHookInput } from './utils/hook-handler';
 import {
     getSessionDuration,
     getSpeedMetricsCollection,
+    getSubagentModelBuckets,
     getTokenMetrics
 } from './utils/jsonl';
 import { advanceGlobalPowerlineThemeIndex } from './utils/powerline-theme-index';
@@ -50,6 +52,7 @@ import {
     getTerminalWidth
 } from './utils/terminal';
 import { prefetchUsageDataIfNeeded } from './utils/usage-prefetch';
+import { areSubagentsExcluded } from './widgets/ReCost';
 
 function hasSessionDurationInStatusJson(data: StatusJSON): boolean {
     const durationMs = data.cost?.total_duration_ms;
@@ -130,6 +133,16 @@ async function renderMultipleLines(data: StatusJSON) {
         tokenMetrics = await getTokenMetrics(data.transcript_path);
     }
 
+    // ReCost reconstructs cost from the transcript, and subagent turns are billed
+    // too - but they live in separate files, so only pay for those reads when a
+    // ReCost widget is actually on screen and configured to include them.
+    let subagentModelBuckets: ModelTokenBucketMap | null = null;
+    const needsSubagentCost = lines.some(line => line.some(item => item.type === 'recost'
+        && !areSubagentsExcluded(item)));
+    if (needsSubagentCost && data.transcript_path) {
+        subagentModelBuckets = await getSubagentModelBuckets(data.transcript_path);
+    }
+
     let sessionDuration: string | null = null;
     if (hasSessionClock && !hasSessionDurationInStatusJson(data) && data.transcript_path) {
         sessionDuration = await getSessionDuration(data.transcript_path);
@@ -164,6 +177,7 @@ async function renderMultipleLines(data: StatusJSON) {
     const context: RenderContext = {
         data,
         tokenMetrics,
+        subagentModelBuckets,
         speedMetrics,
         windowedSpeedMetrics,
         usageData,
