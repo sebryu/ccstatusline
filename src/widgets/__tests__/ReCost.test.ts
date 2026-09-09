@@ -31,7 +31,7 @@ const bucket = (partial: Partial<TokenBucket> = {}): TokenBucket => ({
     ...partial
 });
 
-// 1M Opus output tokens = $75.00, a value that is easy to read back out of the render.
+// 1M Opus output tokens = $25.00, a value that is easy to read back out of the render.
 const opusOutput = (tokens: number): ModelTokenBucketMap => ({ 'claude-opus-4-8': { standard: bucket({ outputTokens: tokens }), longContext: bucket() } });
 
 const context = (overrides: Partial<RenderContext> = {}): RenderContext => ({
@@ -57,11 +57,11 @@ describe('ReCost widget', () => {
     });
 
     it('reconstructs the cost when Claude Code reports zero', () => {
-        expect(render(context())).toBe('~$75.00');
+        expect(render(context())).toBe('~$25.00');
     });
 
     it('reconstructs the cost when no cost field is present at all', () => {
-        expect(render(context({ data: {} }))).toBe('~$75.00');
+        expect(render(context({ data: {} }))).toBe('~$25.00');
     });
 
     it('marks a reconstructed value so it reads as an estimate', () => {
@@ -71,19 +71,19 @@ describe('ReCost widget', () => {
     it('ignores a reported cost when always-estimate is set', () => {
         const ctx = context({ data: { cost: { total_cost_usd: 3.5 } } });
 
-        expect(render(ctx, item({ alwaysEstimate: 'true' }))).toBe('~$75.00');
+        expect(render(ctx, item({ alwaysEstimate: 'true' }))).toBe('~$25.00');
     });
 
     it('adds subagent tokens to the estimate by default', () => {
         const ctx = context({ subagentModelBuckets: opusOutput(1_000_000) });
 
-        expect(render(ctx)).toBe('~$150.00');
+        expect(render(ctx)).toBe('~$50.00');
     });
 
     it('omits subagent tokens when they are excluded', () => {
         const ctx = context({ subagentModelBuckets: opusOutput(1_000_000) });
 
-        expect(render(ctx, item({ excludeSubagents: 'true' }))).toBe('~$75.00');
+        expect(render(ctx, item({ excludeSubagents: 'true' }))).toBe('~$25.00');
     });
 
     it('flags an incomplete total when a model has no pricing entry', () => {
@@ -101,7 +101,7 @@ describe('ReCost widget', () => {
             }
         });
 
-        expect(render(ctx)).toBe('~$75.00?');
+        expect(render(ctx)).toBe('~$25.00?');
     });
 
     it('renders n/a when the transcript yielded no usage', () => {
@@ -115,10 +115,10 @@ describe('ReCost widget', () => {
     });
 
     it('labels the value when raw mode is off', () => {
-        expect(widget.render({ id: 'recost', type: 'recost' }, context(), DEFAULT_SETTINGS)).toBe('Cost: ~$75.00');
+        expect(widget.render({ id: 'recost', type: 'recost' }, context(), DEFAULT_SETTINGS)).toBe('Cost: ~$25.00');
     });
 
     it('exposes the estimate as a numeric value for thresholds', () => {
-        expect(widget.getNumericValue(context(), item())).toBeCloseTo(75, 6);
+        expect(widget.getNumericValue(context(), item())).toBeCloseTo(25, 6);
     });
 });
