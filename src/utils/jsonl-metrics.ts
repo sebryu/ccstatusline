@@ -150,9 +150,13 @@ function accumulateModelUsage(byModel: ModelTokenBucketMap, entry: TranscriptLin
  * A single request emits one transcript line per content block - four parallel
  * tool calls produce four lines - and every one of them repeats the request's
  * full usage totals. Summing the lines therefore multiplies the bill, so entries
- * are keyed by requestId and the last line for each request wins (during
- * streaming that is the finalized one). Entries with no requestId, such as those
- * in older transcripts, are counted individually.
+ * are keyed per request and the last line for each one wins (during streaming
+ * that is the finalized one).
+ *
+ * Transcripts written through Bedrock carry no requestId at all, so the
+ * assistant message id is the fallback key: it is equally unique per API
+ * response, and without it every repeated line is counted again and the
+ * estimate comes out several times too high.
  */
 export function buildModelTokenBuckets(entries: TranscriptLine[]): ModelTokenBucketMap {
     const byModel: ModelTokenBucketMap = {};
@@ -163,8 +167,9 @@ export function buildModelTokenBuckets(entries: TranscriptLine[]): ModelTokenBuc
             continue;
         }
 
-        if (entry.requestId) {
-            lastEntryPerRequest.set(entry.requestId, entry);
+        const requestKey = entry.requestId ?? entry.message.id;
+        if (requestKey) {
+            lastEntryPerRequest.set(requestKey, entry);
             continue;
         }
 

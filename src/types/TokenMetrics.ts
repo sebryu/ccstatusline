@@ -10,7 +10,7 @@ export interface TokenUsage {
 }
 
 export interface TranscriptLine {
-    message?: { usage?: TokenUsage; stop_reason?: string | null; model?: string };
+    message?: { id?: string; usage?: TokenUsage; stop_reason?: string | null; model?: string };
     /** Identifies the API request a line belongs to. One request can emit several lines. */
     requestId?: string;
     isSidechain?: boolean;

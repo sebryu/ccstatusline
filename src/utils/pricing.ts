@@ -40,12 +40,20 @@ const TOKENS_PER_MILLION = 1_000_000;
  * partial table to ~/.config/ccstatusline/pricing.json.
  */
 const DEFAULT_PRICING: PricingTable = {
+    // Opus 4.6 and later dropped to a third of the Opus 4.1 rate and bill their
+    // 1M context at the standard rate, so each of those families needs its own
+    // entry rather than inheriting the legacy 'claude-opus' price.
     'claude-opus': { inputPerMTok: 15, outputPerMTok: 75 },
+    'claude-opus-4-6': { inputPerMTok: 5, outputPerMTok: 25 },
+    'claude-opus-4-7': { inputPerMTok: 5, outputPerMTok: 25 },
+    'claude-opus-4-8': { inputPerMTok: 5, outputPerMTok: 25 },
+    'claude-opus-5': { inputPerMTok: 5, outputPerMTok: 25 },
     'claude-sonnet': {
         inputPerMTok: 3,
         outputPerMTok: 15,
         longContext: { inputPerMTok: 6, outputPerMTok: 22.5 }
     },
+    'claude-sonnet-5': { inputPerMTok: 2, outputPerMTok: 10 },
     'claude-haiku': { inputPerMTok: 1, outputPerMTok: 5 }
 };
 
